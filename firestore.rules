@@ -1,0 +1,107 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Fields:
+//   - uid: string (required)
+//   - displayName: string
+//   - email: string
+//   - photoURL: string
+//   - role: string (admin, dj, viewer)
+//
+// Collection: timeslots
+// Fields:
+//   - title: string (required)
+//   - djName: string
+//   - djId: string (required)
+//   - startTime: timestamp (required)
+//   - endTime: timestamp (required)
+//   - mode: string (audio, video)
+//
+// Collection: chat
+// Fields:
+//   - userId: string (required)
+//   - userName: string
+//   - text: string (required)
+//   - timestamp: timestamp (required)
+//
+// Collection: system
+// Document: stream
+// Fields:
+//   - isLive: bool
+//   - currentTimeslotId: string
+//   - mode: string
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+         (request.auth.token.email == "kaptenlanaja2024@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isDJ() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'dj') || isAdmin());
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'role']) &&
+             data.uid is string &&
+             data.role in ['admin', 'dj', 'viewer'] &&
+             (!('email' in data) || data.email is string) &&
+             (!('displayName' in data) || data.displayName is string);
+    }
+
+    // User Rules
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
+    }
+
+    // Timeslot Rules
+    match /timeslots/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Chat Rules
+    match /chat/{id} {
+      allow read: if true;
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.text.size() < 500;
+      allow delete: if isAdmin();
+    }
+
+    function isValidStreamState(data) {
+      return data.keys().hasAll(['isLive', 'mode', 'viewerCount']) &&
+             data.isLive is bool &&
+             data.mode in ['audio', 'video'] &&
+             data.viewerCount is number &&
+             (!('currentTimeslotId' in data) || data.currentTimeslotId is string || data.currentTimeslotId == null) &&
+             (!('djName' in data) || data.djName is string);
+    }
+
+    // System Rules
+    match /system/stream {
+      allow read: if true;
+      allow write: if isDJ() && isValidStreamState(request.resource.data);
+    }
+  }
+}

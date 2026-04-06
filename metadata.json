@@ -1,0 +1,5 @@
+{
+  "name": "WE RADIO LIVE",
+  "description": "A hybrid broadcasting platform for audio radio and video livestreams with scheduled timeslots and real-time chat.",
+  "requestFramePermissions": ["camera", "microphone"]
+}

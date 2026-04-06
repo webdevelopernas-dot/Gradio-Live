@@ -1,0 +1,76 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and role information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "dj", "viewer"] }
+      },
+      "required": ["uid", "role"]
+    },
+    "Timeslot": {
+      "title": "Timeslot",
+      "description": "Scheduled show timeslot",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "djName": { "type": "string" },
+        "djId": { "type": "string" },
+        "startTime": { "type": "string", "format": "date-time" },
+        "endTime": { "type": "string", "format": "date-time" },
+        "mode": { "type": "string", "enum": ["audio", "video"] },
+        "recurring": { "type": "boolean" }
+      },
+      "required": ["title", "djId", "startTime", "endTime", "mode"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Live chat message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "text", "timestamp"]
+    },
+    "StreamState": {
+      "title": "StreamState",
+      "description": "Current live stream status",
+      "type": "object",
+      "properties": {
+        "isLive": { "type": "boolean" },
+        "currentTimeslotId": { "type": "string" },
+        "mode": { "type": "string", "enum": ["audio", "video"] },
+        "viewerCount": { "type": "number" },
+        "djName": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/timeslots/{id}": {
+      "schema": "Timeslot",
+      "description": "Radio/Video schedule"
+    },
+    "/chat/{id}": {
+      "schema": "ChatMessage",
+      "description": "Global live chat"
+    },
+    "/system/stream": {
+      "schema": "StreamState",
+      "description": "Global stream status"
+    }
+  }
+}
