@@ -16,6 +16,11 @@ const DJPanel = () => {
   const [isCamOn, setIsCamOn] = useState(true);
   const [streamMode, setStreamMode] = useState<'audio' | 'video'>('audio');
   const [streamSource, setStreamSource] = useState<'camera' | 'file'>('camera');
+  const [videoAspectRatio, setVideoAspectRatio] = useState<'landscape' | 'portrait'>('landscape');
+  const [videoQuality, setVideoQuality] = useState<'smooth' | 'high'>('smooth');
+  const [rtmpUrl, setRtmpUrl] = useState('');
+  const [rtmpKey, setRtmpKey] = useState('');
+  const [isSimulcasting, setIsSimulcasting] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [viewerCount, setViewerCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -23,6 +28,8 @@ const DJPanel = () => {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const fileVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const peerConnections = useRef<{ [socketId: string]: RTCPeerConnection }>({});
 
@@ -107,42 +114,96 @@ const DJPanel = () => {
       if (fileVideoRef.current) {
         fileVideoRef.current.src = URL.createObjectURL(file);
       }
+      if (file.type.startsWith('audio/')) {
+        setStreamMode('audio');
+      } else if (file.type.startsWith('video/')) {
+        setStreamMode('video');
+      }
     }
   };
 
   const startBroadcast = async () => {
     try {
       setError(null);
-      let stream: MediaStream;
+      let finalStream = new MediaStream();
+
+      let videoConstraints: boolean | MediaTrackConstraints = false;
+      if (streamMode === 'video') {
+        videoConstraints = {};
+        if (videoAspectRatio === 'landscape') {
+          videoConstraints.aspectRatio = 16 / 9;
+        } else {
+          videoConstraints.aspectRatio = 9 / 16;
+        }
+        
+        if (videoQuality === 'smooth') {
+          videoConstraints.frameRate = { ideal: 60 };
+          videoConstraints.width = { ideal: 1280 };
+          videoConstraints.height = { ideal: 720 };
+        } else {
+          videoConstraints.width = { ideal: 1920 };
+          videoConstraints.height = { ideal: 1080 };
+        }
+      }
 
       if (streamSource === 'camera') {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: streamMode === 'video',
+        finalStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
           audio: true
         });
       } else {
         if (!selectedFile) {
-          setError("Please select a video file first.");
+          setError("Please select a media file first.");
           return;
         }
         if (!fileVideoRef.current) return;
         
         fileVideoRef.current.play();
         // @ts-ignore - captureStream is not in all type definitions
-        stream = fileVideoRef.current.captureStream ? fileVideoRef.current.captureStream() : (fileVideoRef.current as any).mozCaptureStream();
+        const fileStream: MediaStream = fileVideoRef.current.captureStream ? fileVideoRef.current.captureStream() : (fileVideoRef.current as any).mozCaptureStream();
         
-        // If it's a video file, we might still want mic access for commentary
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        audioCtxRef.current = new AudioContextClass();
+        const dest = audioCtxRef.current.createMediaStreamDestination();
+
+        if (fileStream.getAudioTracks().length > 0) {
+          const fileAudioSource = audioCtxRef.current.createMediaStreamSource(fileStream);
+          fileAudioSource.connect(dest);
+        }
+
         try {
-          const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          audioStream.getAudioTracks().forEach(track => stream.addTrack(track));
+          micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+          if (micStreamRef.current.getAudioTracks().length > 0) {
+            const micAudioSource = audioCtxRef.current.createMediaStreamSource(micStreamRef.current);
+            micAudioSource.connect(dest);
+          }
         } catch (e) {
           console.warn("Could not add microphone to file stream:", e);
         }
+
+        dest.stream.getAudioTracks().forEach(track => finalStream.addTrack(track));
+
+        if (fileStream.getVideoTracks().length > 0) {
+          fileStream.getVideoTracks().forEach(track => finalStream.addTrack(track));
+        } else if (streamMode === 'video') {
+          try {
+            const camStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
+            camStream.getVideoTracks().forEach(track => finalStream.addTrack(track));
+          } catch (e) {
+            console.warn("Could not access camera for video track:", e);
+          }
+        }
       }
       
-      localStreamRef.current = stream;
+      localStreamRef.current = finalStream;
       if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.srcObject = finalStream;
+      }
+
+      if (isSimulcasting && rtmpUrl && rtmpKey) {
+        console.log("Simulcasting to RTMP:", rtmpUrl);
+        // Note: Actual RTMP push requires a backend service (e.g., FFmpeg).
+        // This simulates the UI state for the user.
       }
 
       // Update Firebase State
@@ -166,6 +227,14 @@ const DJPanel = () => {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
     }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(track => track.stop());
+      micStreamRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null;
     }
@@ -182,8 +251,9 @@ const DJPanel = () => {
   };
 
   const toggleMic = () => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+    const streamToToggle = streamSource === 'file' && micStreamRef.current ? micStreamRef.current : localStreamRef.current;
+    if (streamToToggle) {
+      const audioTrack = streamToToggle.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMicOn(audioTrack.enabled);
@@ -235,7 +305,7 @@ const DJPanel = () => {
         )}
 
         <div className="bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl">
-          <div className="aspect-video bg-black relative flex items-center justify-center">
+          <div className={`bg-black relative flex items-center justify-center overflow-hidden ${videoAspectRatio === 'portrait' ? 'aspect-[9/16] max-h-[70vh] mx-auto' : 'aspect-video'}`}>
             {/* Hidden video for file processing */}
             <video ref={fileVideoRef} className="hidden" loop muted playsInline />
             
@@ -245,7 +315,7 @@ const DJPanel = () => {
                 autoPlay
                 muted
                 playsInline
-                className="w-full h-full object-cover"
+                className={`w-full h-full ${videoAspectRatio === 'portrait' ? 'object-contain' : 'object-cover'}`}
               />
             ) : (
               <div className="flex flex-col items-center gap-6">
@@ -352,10 +422,10 @@ const DJPanel = () => {
 
             {streamSource === 'file' && (
               <div className="space-y-2">
-                <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Select Video File</label>
+                <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Select Media File (Audio/Video)</label>
                 <input 
                   type="file" 
-                  accept="video/*"
+                  accept="video/*, audio/*"
                   onChange={handleFileChange}
                   disabled={isLive}
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2 px-4 text-xs text-zinc-400 file:mr-4 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-zinc-800 file:text-white hover:file:bg-zinc-700 transition-all"
@@ -383,6 +453,94 @@ const DJPanel = () => {
                 </button>
               </div>
             </div>
+
+            {streamMode === 'video' && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Video Orientation</label>
+                  <div className="flex gap-2 p-1 bg-zinc-950 rounded-xl border border-zinc-800">
+                    <button 
+                      onClick={() => setVideoAspectRatio('landscape')}
+                      disabled={isLive}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${videoAspectRatio === 'landscape' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >
+                      Landscape (16:9)
+                    </button>
+                    <button 
+                      onClick={() => setVideoAspectRatio('portrait')}
+                      disabled={isLive}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${videoAspectRatio === 'portrait' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >
+                      Portrait (9:16)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Video Quality</label>
+                  <div className="flex gap-2 p-1 bg-zinc-950 rounded-xl border border-zinc-800">
+                    <button 
+                      onClick={() => setVideoQuality('smooth')}
+                      disabled={isLive}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${videoQuality === 'smooth' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >
+                      Smooth (60fps)
+                    </button>
+                    <button 
+                      onClick={() => setVideoQuality('high')}
+                      disabled={isLive}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${videoQuality === 'high' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >
+                      High Res (1080p)
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-zinc-900 p-8 rounded-3xl border border-zinc-800 space-y-6">
+          <h3 className="font-bold text-lg flex items-center gap-2">
+            <Radio className="w-5 h-5 text-zinc-500" />
+            Facebook RTMP Simulcast
+          </h3>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">RTMP URL</label>
+              <input 
+                type="text" 
+                placeholder="rtmps://live-api-s.facebook.com:443/rtmp/"
+                value={rtmpUrl}
+                onChange={(e) => setRtmpUrl(e.target.value)}
+                disabled={isLive}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-3 px-4 text-sm focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Stream Key</label>
+              <input 
+                type="password" 
+                placeholder="Paste your Facebook Stream Key here"
+                value={rtmpKey}
+                onChange={(e) => setRtmpKey(e.target.value)}
+                disabled={isLive}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-3 px-4 text-sm focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50"
+              />
+            </div>
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                onClick={() => setIsSimulcasting(!isSimulcasting)}
+                disabled={isLive}
+                className={`w-12 h-6 rounded-full transition-colors relative ${isSimulcasting ? 'bg-blue-600' : 'bg-zinc-700'} disabled:opacity-50`}
+              >
+                <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-all ${isSimulcasting ? 'left-7' : 'left-1'}`} />
+              </button>
+              <span className="text-sm font-bold text-zinc-300">Enable Facebook Simulcast</span>
+            </div>
+            <p className="text-[10px] text-zinc-500 leading-relaxed">
+              * Note: RTMP streaming from the browser requires a backend transcoding service. This UI is ready for backend integration.
+            </p>
           </div>
         </div>
 
