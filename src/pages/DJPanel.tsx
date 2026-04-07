@@ -122,6 +122,8 @@ const DJPanel = () => {
     }
   };
 
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+
   const startBroadcast = async () => {
     try {
       setError(null);
@@ -201,9 +203,15 @@ const DJPanel = () => {
       }
 
       if (isSimulcasting && rtmpUrl && rtmpKey) {
-        console.log("Simulcasting to RTMP:", rtmpUrl);
-        // Note: Actual RTMP push requires a backend service (e.g., FFmpeg).
-        // This simulates the UI state for the user.
+        // Start MediaRecorder
+        mediaRecorderRef.current = new MediaRecorder(finalStream, { mimeType: 'video/webm' });
+        mediaRecorderRef.current.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            socketRef.current?.emit('stream-data', event.data);
+          }
+        };
+        mediaRecorderRef.current.start(1000); // Send chunks every 1s
+        socketRef.current?.emit('start-rtmp', { rtmpUrl, rtmpKey });
       }
 
       // Update Firebase State
@@ -240,6 +248,10 @@ const DJPanel = () => {
     }
     if (fileVideoRef.current) {
       fileVideoRef.current.pause();
+    }
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      socketRef.current?.emit('stop-rtmp');
     }
 
     await updateDoc(doc(db, 'system', 'stream'), {
