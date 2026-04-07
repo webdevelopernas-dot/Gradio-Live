@@ -18,9 +18,15 @@ async function startServer() {
     let inputStream: PassThrough | null = null;
     let ffmpegProcess: any = null;
 
-    socket.on("start-rtmp", ({ rtmpUrl, rtmpKey }) => {
+    socket.on("start-rtmp", ({ rtmpUrl, rtmpKey, videoPreset }) => {
       inputStream = new PassThrough();
       
+      const preset = {
+        '720p30': { width: 1280, height: 720, fps: 30, bitrate: '2500k' },
+        '1080p30': { width: 1920, height: 1080, fps: 30, bitrate: '4500k' },
+        '1080p60': { width: 1920, height: 1080, fps: 60, bitrate: '6000k' },
+      }[videoPreset as '720p30' | '1080p30' | '1080p60'] || { width: 1920, height: 1080, fps: 30, bitrate: '4500k' };
+
       // Robust handling: If inputs are swapped, fix them
       let actualUrl = rtmpUrl;
       let actualKey = rtmpKey;
@@ -41,6 +47,15 @@ async function startServer() {
         .outputOptions([
           '-preset veryfast',
           '-tune zerolatency',
+          `-s ${preset.width}x${preset.height}`,
+          `-r ${preset.fps}`,
+          `-g ${preset.fps * 2}`,
+          `-keyint_min ${preset.fps * 2}`,
+          '-sc_threshold 0',
+          '-pix_fmt yuv420p',
+          `-b:v ${preset.bitrate}`,
+          `-maxrate:v ${preset.bitrate}`,
+          `-bufsize:v ${parseInt(preset.bitrate) * 2}k`,
           '-f flv'
         ])
         .output(`${actualUrl}${actualKey ? (actualUrl.endsWith('/') ? '' : '/') + actualKey : ''}`)
@@ -51,6 +66,7 @@ async function startServer() {
           if ((err as any).stderr) {
             console.error('FFmpeg stderr:', (err as any).stderr);
           }
+          socket.emit('rtmp-error', err.message);
         })
         .run();
     });

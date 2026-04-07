@@ -17,13 +17,21 @@ const DJPanel = () => {
   const [streamMode, setStreamMode] = useState<'audio' | 'video'>('audio');
   const [streamSource, setStreamSource] = useState<'camera' | 'file'>('camera');
   const [videoAspectRatio, setVideoAspectRatio] = useState<'landscape' | 'portrait'>('landscape');
-  const [videoQuality, setVideoQuality] = useState<'smooth' | 'high'>('smooth');
+  const [videoPreset, setVideoPreset] = useState<'720p30' | '1080p30' | '1080p60'>('1080p30');
   const [rtmpUrl, setRtmpUrl] = useState('');
   const [rtmpKey, setRtmpKey] = useState('');
   const [isSimulcasting, setIsSimulcasting] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [viewerCount, setViewerCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const MAX_RETRIES = 3;
+
+  const VIDEO_PRESETS = {
+    '720p30': { width: 1280, height: 720, fps: 30, bitrate: '2500k' },
+    '1080p30': { width: 1920, height: 1080, fps: 30, bitrate: '4500k' },
+    '1080p60': { width: 1920, height: 1080, fps: 60, bitrate: '6000k' },
+  };
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const fileVideoRef = useRef<HTMLVideoElement>(null);
@@ -72,6 +80,20 @@ const DJPanel = () => {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       }
     });
+
+    socketRef.current.on('rtmp-error', (errorMsg) => {
+      console.error('RTMP Error:', errorMsg);
+      setError(`Stream Error: ${errorMsg}. Retrying...`);
+      
+      if (retryCount < MAX_RETRIES) {
+        setRetryCount(prev => prev + 1);
+        setTimeout(startBroadcast, 2000); // Retry after 2s
+      } else {
+        setError(`Stream failed after ${MAX_RETRIES} retries. Please check your connection.`);
+        setIsLive(false);
+      }
+    });
+
     return () => {
       unsubSlots();
       unsubStream();
@@ -127,24 +149,21 @@ const DJPanel = () => {
   const startBroadcast = async () => {
     try {
       setError(null);
+      setRetryCount(0); // Reset retry count on successful start
       let finalStream = new MediaStream();
 
       let videoConstraints: boolean | MediaTrackConstraints = false;
       if (streamMode === 'video') {
-        videoConstraints = {};
+        const preset = VIDEO_PRESETS[videoPreset];
+        videoConstraints = {
+          width: { ideal: preset.width },
+          height: { ideal: preset.height },
+          frameRate: { ideal: preset.fps }
+        };
         if (videoAspectRatio === 'landscape') {
           videoConstraints.aspectRatio = 16 / 9;
         } else {
           videoConstraints.aspectRatio = 9 / 16;
-        }
-        
-        if (videoQuality === 'smooth') {
-          videoConstraints.frameRate = { ideal: 60 };
-          videoConstraints.width = { ideal: 1280 };
-          videoConstraints.height = { ideal: 720 };
-        } else {
-          videoConstraints.width = { ideal: 1920 };
-          videoConstraints.height = { ideal: 1080 };
         }
       }
 
@@ -211,7 +230,7 @@ const DJPanel = () => {
           }
         };
         mediaRecorderRef.current.start(1000); // Send chunks every 1s
-        socketRef.current?.emit('start-rtmp', { rtmpUrl, rtmpKey });
+        socketRef.current?.emit('start-rtmp', { rtmpUrl, rtmpKey, videoPreset });
       }
 
       // Update Firebase State
@@ -489,23 +508,17 @@ const DJPanel = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Video Quality</label>
-                  <div className="flex gap-2 p-1 bg-zinc-950 rounded-xl border border-zinc-800">
-                    <button 
-                      onClick={() => setVideoQuality('smooth')}
-                      disabled={isLive}
-                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${videoQuality === 'smooth' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
-                    >
-                      Smooth (60fps)
-                    </button>
-                    <button 
-                      onClick={() => setVideoQuality('high')}
-                      disabled={isLive}
-                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${videoQuality === 'high' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
-                    >
-                      High Res (1080p)
-                    </button>
-                  </div>
+                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Video Preset</label>
+                  <select 
+                    value={videoPreset}
+                    onChange={(e) => setVideoPreset(e.target.value as any)}
+                    disabled={isLive}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-3 px-4 focus:outline-none focus:border-red-500 transition-colors disabled:opacity-50 text-xs text-white"
+                  >
+                    <option value="720p30">720p 30fps</option>
+                    <option value="1080p30">1080p 30fps</option>
+                    <option value="1080p60">1080p 60fps</option>
+                  </select>
                 </div>
               </>
             )}
